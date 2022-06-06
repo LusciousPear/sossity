@@ -53,14 +53,17 @@
 #_(defn new-topic-name [in out] (str in "-to-" out))
 
 (defn new-topic-name [g in]
+  "Create the naming scheme for a new streaming topic"
   (if (= (attr g in :exec) :sink)
     (str in "-error-out")
     (str in "-out")))
 
 (defn error-topic-name [g in]
+  "Crate the naming scheme for an error topic"
   (str in "-error-out"))
 
 (defn item-metadata [node a-graph]
+  "Annotate a node in a-graph with the relevant metadata"
   (cond-let
    [item (get (:pipelines a-graph) node)] (assoc item :exec :pipeline)
    [item (get (:sources a-graph) node)] (assoc item :exec :source)
@@ -70,6 +73,7 @@
                                         (assoc item :exec :sink))))
 
 (defn config-md [a-graph]
+  "Executable metadata -- see documentation"
   {:config-file a-graph
    :project (get-in a-graph [:provider :project])
    :region (get-in a-graph [:opts :zone])
@@ -78,7 +82,7 @@
    :remote-libs-path (get-in a-graph [:config :remote-libs-path])})
 
 (defn build-items [g node md]
-  "Add each metadata per node"                              ;may need to add some kinda filter on this
+  "Add each metadata per node"
   (reduce #(add-attr %1 node (key %2) (val %2)) g md))
 
 (defn build-annot [g nodes a-graph]
@@ -86,19 +90,17 @@
   (reduce #(build-items %1 %2 (item-metadata %2 a-graph)) g nodes))
 
 (defn anns [g a-graph]
-  "Traverse graph and annotate nodes w/ metadata"
+  "Traverse graph g and annotate nodes w/ metadata"
   (let [t (bf-traverse g)] ;traverse graph to get list of nodes
     (build-annot g t a-graph)))
 
-;NEED ERROR CHECKING - make sure all sources and sinks are in execution graph, etc
-;CASE-SENSITIVE
-
-
 (defn is-bigquery?
+  "Is the node a bigquery node?"
   [g node]
   (= "bq" (attr g node :type)))
 
 (defn topic
+  "Construct a topic"
   [project node]
   (str "projects/" project "/topics/" node))
 
@@ -112,7 +114,7 @@
       (new-topic-name g in))))
 
 (defn topic-edge
-  "combine edge name and graph project with 2 strings to demonstrate varaible args"
+  "combine edge name and graph project with 2 strings to demonstrate variable args"
   [g edge conf]
   (topic (:project conf) (attr g edge :name)))
 
@@ -150,14 +152,17 @@
     (mapv #(assoc {} % (str "${googleappengine_app." % ".moduleName}-dot-" (:project conf) ".appspot.com")) containers)))
 
 (defn join-containers [deps]
+  "Join two container names"
   (if (> (count deps) 0)
     (clojure.string/join (flatten (interpose "," (map #(interpose "|" (first %)) deps))))))
 
 (defn parent-error-enabled? [g node]
+  "Determine if an error collector is enabled"
   (let [parent (first (predecessors g node))]
     (or (attr g parent :error-out))))
 
 (defn create-container [g node conf]
+  "Create a kubernetes container to run a service"
   (let [item_name (clojure.string/lower-case node)
         proj_name (:project conf)
         resource_version (attr g node :resource-version)
@@ -202,9 +207,11 @@
     {name {:name name :topic topic :depends_on [(str pt-prefix "." (attr g edge :name))]}}))
 
 (defn create-subs [g node]
+  "Create subscriptions"
   (apply merge (map #(create-sub g % node) (in-edges g node))))
 
 (defn create-bucket [g node]
+  "Create a google storage bucket"
   (if (and (= "gcs" (attr g node :type)) (attr g node :bucket))
     {(attr g node :bucket) {:name (attr g node :bucket) :force_destroy (or (attr g node :force_destroy) default-force-bucket-destroy) :location default-bucket-location}}))
 
@@ -257,6 +264,7 @@
                 :scaling {:minIdleInstances default-min-idle :maxIdleInstances default-max-idle :minPendingLatency default-min-pending-latency :maxPendingLatency default-max-pending-latency}}}))
 
 (defn create-dataflow-job                                ;build the right classpath, etc. composer should take all the jars in the classpath and glue them together like the transform-jar?
+  "Create a dataflow job by traversing graph g"
   [g node conf]
   (let [output-edge (first (u/filter-not-edge-attrs g :type :error (out-edges g node)))
         input-edges (u/filter-not-edge-attrs g :type :error (in-edges g node))
@@ -297,10 +305,12 @@
 
 
 (defn create-bq-dataset [g node]
+  "Crete a dataset in bigquery"
   (let [ds (attr g node :bigQueryDataset)]
     {ds {:datasetId ds}}))
 
 (defn create-bq-table [g node]
+  "Create a bigquery table"
   (let [table (attr g node :bigQueryTable)]
     {table {:tableId    table
             :depends_on [(str "googlebigquery_dataset." (attr g node :bigQueryDataset))]
@@ -308,24 +318,30 @@
             :schemaFile (attr g node :bigQuerySchema)}}))
 
 (defn create-dataflow-jobs [g conf]
+  "Create a dataflow job"
   (apply merge (map #(create-dataflow-job g % conf) (u/filter-node-attrs g :exec :pipeline))))
 
 (defn output-provider
+  "Create a terraform output provider"
   [provider-map]
   (assoc (:provider provider-map) :region (get-in provider-map [:opts :zone])))
 
 (defn output-pubsub [g]
+  "Create a pubsub queue"
   (apply merge (map #(assoc-in {} [(attr g % :name) :name] (attr g % :name)) (edges g))))
 
 (defn create-sources [g conf]
+  "Create a service source in appengine"
   (apply merge (map #(create-appengine-source % g conf)
                     (u/filter-node-attrs g :exec :source))))
 
 (defn output-bq-datasets [g]
+  "Create an output dataset in bigquery"
   (apply merge (map #(create-bq-dataset g %)
                     (u/filter-node-attrs g :type "bq"))))
 
 (defn output-bq-tables [g]
+  "Output bigquery tables"
   (apply merge (map #(create-bq-table g %)
                     (u/filter-node-attrs g :type "bq"))))
 
@@ -338,23 +354,29 @@
     (apply merge (map #(create-appengine-sink % g conf) (u/filter-node-attrs g :exec :sink))))
 
 (defn output-sinks [g conf]
+  "Create sinks for ourput"
   (apply merge (map #(create-sink-container g % conf) (u/filter-node-attrs g :exec :sink))))
 
 (defn output-containers [g conf]
+  "Create generic kubernetes containers for output data"
   (let [containers (u/filter-node-attrs g :exec :container)]
     (apply merge (map #(create-appengine-dep % g conf) containers))))
 
 (defn output-subs [g]
+  "Crete subscriptions for outputs"
   (apply merge (map #(create-subs g %) (u/filter-node-attrs g :type "gcs"))))
 
 (defn output-buckets [g]
+  "Create storage buckets for output"
   (apply merge (map #(create-bucket g %) (nodes g))))
 
 (defn output-container-cluster
+  "Create a kuberenets cluster to output to "
   [a-graph]
   {:hx_fstack_cluster (create-container-cluster a-graph)})
 
 (defn add-error-sink-node [g parent conf]
+  "Add an error handling node in the DAG and assocated sink"
   (let [name (str parent "-error")]
     (-> g
         (add-nodes name)
@@ -368,6 +390,7 @@
         (add-attr-to-edges :type :error [[parent name]]))))
 
 (defn add-containers [g a-graph]
+  "Add service containers to DAG"
   (reduce #(add-nodes %1 (key %2)) g (:containers a-graph)))
 
 (defn name-subs [g]
@@ -393,6 +416,7 @@
 )
 
 (defn create-terraform-json
+  "Generate the terraform file to create infrastructure"
   [a-graph]
   (let [conf (config-md a-graph)
         g (create-dag a-graph conf)
@@ -418,10 +442,12 @@
 
 
 (defn output-terraform-file
+  "Output the terraform json"
   [a-graph file]
   (spit file (create-terraform-json a-graph) :create true :append false :truncate true))
 
 (defn merge-graph-items [g1 g2]
+  "Merge graphs for any traversal"
   (-> g1
       (update :opts #(merge-with conj % (:opts g2)))
       (update :containers #(merge-with conj % (:containers g2)))
@@ -434,6 +460,7 @@
       (update :sinks #(merge-with conj % (:sinks g2)))))
 
 (defn validate-config [a-graph]
+  "Make sure the config has necessary values"
   (s/validate cs/base a-graph))
 
 (defn read-graphs [input-files]
@@ -443,10 +470,12 @@
         validate-config)))
 
 (defn read-and-create
+  "Read the config file and generate terraform"
   [input output]
   (output-terraform-file (read-graphs input) output))
 
 (defn view-graph
+  "Visualize DAG"
   [input]
   (loom.io/view (create-dag (read-graphs input) (config-md (read-graphs input)))))
 
